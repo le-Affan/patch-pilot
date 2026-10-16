@@ -1,7 +1,6 @@
-import difflib
-
 import streamlit as st
 
+from patchpilot import components as ui
 from patchpilot.agent import repair
 from patchpilot.llm import diagnose_and_fix, get_api_key, get_model
 from patchpilot.samples import SAMPLES, recorded_fixer_for
@@ -9,24 +8,26 @@ from patchpilot.samples import SAMPLES, recorded_fixer_for
 MAX_LINES = 200
 MAX_RUNS = 5
 
-st.set_page_config(page_title="PatchPilot", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="PatchPilot", page_icon=None, layout="wide", initial_sidebar_state="expanded")
+st.html(ui.css())
 st.session_state.setdefault("runs", 0)
-
-st.title("🛠️ PatchPilot")
-st.caption("An autonomous agent that runs your buggy Python, diagnoses the failure, patches it, and re-runs until it passes.")
-st.warning("Demo only. Do not paste sensitive code or secrets. Code runs in a basic subprocess, not a hardened sandbox.")
+st.session_state.setdefault("steps", [])
+st.session_state.setdefault("final", None)
 
 has_key = bool(get_api_key())
-if not has_key:
-    st.info("No `OPENROUTER_API_KEY` configured. Running in **replay mode**: the built-in samples use pre-recorded fixes.")
+names = list(SAMPLES)
 
+# ---------------- sidebar ----------------
 with st.sidebar:
-    st.header("Settings")
-    choice = st.selectbox("Sample program", ["(custom)"] + list(SAMPLES))
+    st.html(ui.side_section("Input", first=True))
+    choice = st.selectbox("Sample program", names + ["(custom)"], index=0)
+    st.html(ui.side_section("Agent"))
     max_attempts = st.slider("Max attempts", 1, 4, 4)
-    st.caption(f"Repair runs used: {st.session_state.runs}/{MAX_RUNS}")
-    if has_key:
-        st.caption(f"Model: `{get_model()}`")
+    st.html(ui.side_section("Usage"))
+    meter_ph = st.empty()
+    meter_ph.html(ui.usage_meter(st.session_state.runs, MAX_RUNS))
+    st.html(ui.side_section("Model"))
+    st.html(ui.model_badge(get_model() if has_key else None, replay=not has_key))
 
 default = SAMPLES[choice]["code"] if choice in SAMPLES else ""
 # Reset the editor when the sample selection changes.
@@ -34,76 +35,124 @@ if st.session_state.get("_last_choice") != choice:
     st.session_state["_last_choice"] = choice
     st.session_state["code"] = default
 
-code = st.text_area("Buggy Python code", key="code", height=300)
-go = st.button("Fix it", type="primary")
+# ---------------- header ----------------
+st.markdown(ui.wordmark(), unsafe_allow_html=True)
 
+left, right = st.columns(2, gap="large")
 
-def unified(a: str, b: str) -> str:
-    return "".join(
-        difflib.unified_diff(
-            a.splitlines(keepends=True), b.splitlines(keepends=True), "original.py", "fixed.py"
-        )
+with left:
+    st.html(ui.panel_title("Editor"))
+    st.html(ui.editor_bar(len(st.session_state.get("code", "").splitlines()), MAX_LINES))
+    code = st.text_area(
+        "Buggy Python code",
+        key="code",
+        height=440,
+        label_visibility="collapsed",
+        placeholder="Paste Python here, or pick a sample in the sidebar.",
     )
+    st.html('<div class="pp-actions"></div>')
+    at_cap = st.session_state.runs >= MAX_RUNS
+    go = st.button("Fix it", type="primary", disabled=at_cap)
+
+with right:
+    st.html(ui.panel_title("Results"))
+    notice_ph = st.empty()
+    banner_ph = st.empty()
+    tabs_ct = st.container()
+    log_ph = st.empty()
+
+
+def render_final(final: dict, n_attempts: int, max_n: int) -> None:
+    banner_ph.html(ui.banner(final["passed"], n_attempts, max_n))
+    with tabs_ct:
+        t_diff, t_cmp, t_out = st.tabs(["Diff", "Original vs Fixed", "Output"])
+        with t_diff:
+            st.html(ui.diff_html(final["original"], final["code"]))
+        with t_cmp:
+            st.html(ui.side_by_side(final["original"], final["code"]))
+        with t_out:
+            st.html(ui.code_block(final["output"] or "(no output)"))
+
+
+def attempt_count(steps: list) -> int:
+    return sum(1 for s in steps if s["title"].startswith("Attempt"))
+
+
+def problem(msg: str):
+    notice_ph.html(ui.notice(msg, "err"))
+    log_ph.html("")
 
 
 if go:
+    problem_msg = None
     if not code.strip():
-        st.error("Paste some code or pick a sample.")
-        st.stop()
-    if len(code.splitlines()) > MAX_LINES:
-        st.error(f"Input too long. Max {MAX_LINES} lines.")
-        st.stop()
-    if st.session_state.runs >= MAX_RUNS:
-        st.error(f"Demo limit reached ({MAX_RUNS} repair runs per session). Refresh to start over.")
-        st.stop()
-
-    if has_key:
-        fixer = diagnose_and_fix
-    else:
-        fixer = recorded_fixer_for(code)
+        problem_msg = "Paste some code or pick a sample."
+    elif len(code.splitlines()) > MAX_LINES:
+        problem_msg = f"Input too long. Max {MAX_LINES} lines."
+    elif st.session_state.runs >= MAX_RUNS:
+        problem_msg = f"Demo limit reached ({MAX_RUNS} repair runs per session). Refresh to start over."
+    fixer = None
+    if problem_msg is None:
+        fixer = diagnose_and_fix if has_key else recorded_fixer_for(code)
         if fixer is None:
-            st.error("Replay mode only supports the built-in samples. Configure `OPENROUTER_API_KEY` to fix custom code.")
-            st.stop()
+            problem_msg = "Replay mode only supports the built-in samples. Set OPENROUTER_API_KEY to fix custom code."
 
-    st.session_state.runs += 1
-    st.subheader("Live log")
-    final = None
-    for ev in repair(code, fixer, max_attempts):
-        if ev.kind == "initial_run":
-            if ev.passed:
-                st.success("Code already runs cleanly. Nothing to fix.")
-            else:
-                with st.expander("Initial run: failed", expanded=True):
-                    st.code(ev.output, language="text")
-        elif ev.kind == "attempt":
-            badge = "✅ passed" if ev.passed else "❌ still failing"
-            with st.expander(f"Attempt {ev.attempt}: {badge}", expanded=True):
+    if problem_msg:
+        problem(problem_msg)
+    else:
+        st.session_state.runs += 1
+        meter_ph.html(ui.usage_meter(st.session_state.runs, MAX_RUNS))
+        steps: list[dict] = []
+        st.session_state.final = None
+
+        def draw(running_title: str | None = None):
+            shown = list(steps)
+            if running_title:
+                shown.append({"status": "running", "title": running_title, "diag": "Working..."})
+            log_ph.html(ui.timeline(shown))
+
+        draw("Initial run")
+        final = None
+        for ev in repair(code, fixer, max_attempts):
+            if ev.kind == "initial_run":
+                lines = ev.output.strip().splitlines()
+                steps.append({
+                    "status": "passed" if ev.passed else "failed",
+                    "title": "Initial run",
+                    "diag": "Exited cleanly" if ev.passed else (lines[-1] if lines else "Failed"),
+                    "error": None if ev.passed else ev.output,
+                })
+                if not ev.passed:
+                    draw("Attempt 1")
+            elif ev.kind == "attempt":
                 if ev.error:
-                    st.error(f"Agent error: {ev.error}")
-                    continue
-                st.markdown("**Error before patch**")
-                st.code(ev.extra.get("error_before", ""), language="text")
-                st.markdown("**Diagnosis**")
-                st.write(ev.diagnosis)
-                st.markdown("**Patched code**")
-                st.code(ev.code, language="python")
-                st.markdown("**Run output**")
-                st.code(ev.output or "(no output)", language="text")
-        elif ev.kind == "done":
-            final = ev
+                    steps.append({"status": "failed", "title": f"Attempt {ev.attempt}", "diag": ev.error})
+                else:
+                    steps.append({
+                        "status": "passed" if ev.passed else "failed",
+                        "title": f"Attempt {ev.attempt}",
+                        "diag": ev.diagnosis,
+                        "error": ev.extra.get("error_before", ""),
+                        "code": ev.code,
+                        "output": ev.output,
+                    })
+                    if not ev.passed and ev.attempt < max_attempts:
+                        draw(f"Attempt {ev.attempt + 1}")
+            elif ev.kind == "done":
+                final = {"passed": ev.passed, "code": ev.code, "original": ev.original, "output": ev.output}
+        draw()
+        if final:
+            st.session_state.steps, st.session_state.final = steps, final
+            render_final(final, attempt_count(steps), max_attempts)
+elif st.session_state.final:
+    log_ph.html(ui.timeline(st.session_state.steps))
+    render_final(st.session_state.final, attempt_count(st.session_state.steps), max_attempts)
+else:
+    if at_cap:
+        notice_ph.html(ui.notice(f"Demo limit reached ({MAX_RUNS} repair runs per session). Refresh to start over.", "err"))
+    log_ph.html(ui.empty_state())
 
-    if final:
-        st.subheader("Result")
-        if final.passed:
-            st.success("SUCCESS: code now runs cleanly.")
-        else:
-            st.error("FAILED: could not fix within the attempt limit.")
-        left, right = st.columns(2)
-        left.markdown("**Original**")
-        left.code(final.original, language="python")
-        right.markdown("**Fixed**")
-        right.code(final.code, language="python")
-        st.markdown("**Unified diff**")
-        st.code(unified(final.original, final.code) or "(no changes)", language="diff")
-        st.markdown("**Final run output**")
-        st.code(final.output or "(no output)", language="text")
+if at_cap and (go or st.session_state.final):
+    notice_ph.html(ui.notice(f"Demo limit reached ({MAX_RUNS} repair runs per session). Refresh to start over.", "info"))
+
+st.html(ui.footer())
