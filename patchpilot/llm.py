@@ -1,11 +1,12 @@
-"""Anthropic call: ask for a diagnosis and a fixed program as strict JSON."""
+"""OpenRouter call: ask for a diagnosis and a fixed program as strict JSON."""
 from __future__ import annotations
 
 import json
 import os
 import re
 
-DEFAULT_MODEL = "claude-sonnet-5-5"
+DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+BASE_URL = "https://openrouter.ai/api/v1"
 
 SYSTEM_PROMPT = """You are PatchPilot, an expert Python debugger.
 You get a Python program and the output of running it (an error, or a failing assertion).
@@ -20,7 +21,7 @@ def get_model() -> str:
 
 
 def get_api_key() -> str | None:
-    return _secret("ANTHROPIC_API_KEY")
+    return _secret("OPENROUTER_API_KEY")
 
 
 def _secret(name: str) -> str | None:
@@ -38,7 +39,7 @@ def _secret(name: str) -> str | None:
 
 def parse_response(text: str) -> dict:
     """Defensively extract {diagnosis, fixed_code} from model text."""
-    text = text.strip()
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     candidates = [text]
     fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     if fence:
@@ -63,11 +64,15 @@ def parse_response(text: str) -> dict:
     raise ValueError("Could not parse model response as JSON")
 
 
-def diagnose_and_fix(code: str, run_output: str, history: list[dict] | None = None) -> dict:
-    """Return {"diagnosis": str, "fixed_code": str}."""
-    import anthropic
+class LLMError(Exception):
+    """Friendly, user-displayable LLM failure."""
 
-    client = anthropic.Anthropic(api_key=get_api_key())
+
+def diagnose_and_fix(code: str, run_output: str, history: list[dict] | None = None) -> dict:
+    """Return {"diagnosis": str, "fixed_code": str}. Raises LLMError with a friendly message."""
+    import openai
+
+    client = openai.OpenAI(api_key=get_api_key(), base_url=BASE_URL, timeout=90, max_retries=1)
     prior = ""
     if history:
         prior = "\n\nPrevious failed attempts (do not repeat them):\n" + "\n".join(
@@ -78,11 +83,27 @@ def diagnose_and_fix(code: str, run_output: str, history: list[dict] | None = No
         f"Program:\n```python\n{code}\n```\n\nRun output (stdout+stderr):\n```\n{run_output}\n```"
         f"{prior}\n\nReturn the JSON object now."
     )
-    resp = client.messages.create(
-        model=get_model(),
-        max_tokens=4096,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user}],
-    )
-    text = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
-    return parse_response(text)
+    try:
+        resp = client.chat.completions.create(
+            model=get_model(),
+            max_tokens=4096,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user},
+            ],
+        )
+    except openai.AuthenticationError:
+        raise LLMError("OpenRouter rejected the API key. Check OPENROUTER_API_KEY.") from None
+    except openai.RateLimitError:
+        raise LLMError("OpenRouter rate limit hit. Wait a moment and try again.") from None
+    except openai.NotFoundError:
+        raise LLMError(f"Model `{get_model()}` not found on OpenRouter. Check PATCHPILOT_MODEL.") from None
+    except openai.APIConnectionError:
+        raise LLMError("Could not reach OpenRouter. Check your network and try again.") from None
+    except openai.APIError as e:
+        raise LLMError(f"OpenRouter error: {getattr(e, 'message', e)}") from None
+    text = (resp.choices[0].message.content or "") if resp.choices else ""
+    try:
+        return parse_response(text)
+    except ValueError:
+        raise LLMError("The model returned a response that was not valid JSON.") from None

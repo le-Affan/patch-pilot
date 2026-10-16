@@ -18,7 +18,7 @@ st.warning("Demo only. Do not paste sensitive code or secrets. Code runs in a ba
 
 has_key = bool(get_api_key())
 if not has_key:
-    st.info("No `ANTHROPIC_API_KEY` configured. Running in **replay mode**: the built-in samples use pre-recorded fixes.")
+    st.info("No `OPENROUTER_API_KEY` configured. Running in **replay mode**: the built-in samples use pre-recorded fixes.")
 
 with st.sidebar:
     st.header("Settings")
@@ -62,7 +62,7 @@ if go:
     else:
         fixer = recorded_fixer_for(code)
         if fixer is None:
-            st.error("Replay mode only supports the built-in samples. Configure `ANTHROPIC_API_KEY` to fix custom code.")
+            st.error("Replay mode only supports the built-in samples. Configure `OPENROUTER_API_KEY` to fix custom code.")
             st.stop()
 
     st.session_state.runs += 1

@@ -39,7 +39,7 @@ def repair(code: str, fixer: Fixer, max_attempts: int = MAX_ATTEMPTS) -> Iterato
         try:
             fix = fixer(code, result.output, history)
         except Exception as e:  # LLM/network/parse failure
-            yield Event("attempt", attempt=n, code=code, output=result.output, error=f"{type(e).__name__}: {e}")
+            yield Event("attempt", attempt=n, code=code, output=result.output, error=str(e) if type(e).__name__ == "LLMError" else f"{type(e).__name__}: {e}")
             break
         new_code = fix["fixed_code"]
         new_result = run_code(new_code)
