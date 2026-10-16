@@ -6,6 +6,8 @@ An autonomous AI agent that runs buggy Python, reads the failure, asks an LLM fo
 
 > Demo only. Not production software. Do not paste sensitive code.
 
+![PatchPilot fixing an off-by-one bug](docs/screenshots/1440-result.png)
+
 ## What it does
 
 Paste buggy Python (or pick a built-in sample). PatchPilot runs it, captures the error or failing assertion, gets a diagnosis and corrected program from NVIDIA Nemotron 3 Super (via OpenRouter), re-runs the patched code, and loops up to 4 attempts. The UI streams every step live and finishes with a side-by-side view, a unified diff, and the final run output.
@@ -41,7 +43,12 @@ Python 3.11+, Streamlit, OpenAI Python SDK pointed at [OpenRouter](https://openr
 
 ```
 app.py                  Streamlit UI
+docs/
+  design.md             UI design spec
+  screenshots/          desktop screenshots (1440px and 1920px)
 patchpilot/
+  components.py         HTML builders (timeline, diff, banner)
+  styles.css            design system (see docs/design.md)
   agent.py              repair loop, yields step events (max 4 attempts)
   sandbox.py            subprocess runner (temp dir, 10s timeout, stripped env)
   llm.py                OpenRouter call, strict-JSON prompt, defensive parsing
