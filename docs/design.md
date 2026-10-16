@@ -64,8 +64,8 @@ No gradients, no glows, no purple.
 - **Diff**: GitHub-style table, two line-number gutters, +/- column, hunk headers.
 - **Empty state**: dashed border panel with a short instruction and 3 numbered steps.
 - **Footer**: single muted line with repo link.
-- **Hidden chrome**: toolbar/deploy/menu, decoration and footer. The header strip stays (transparent) so the sidebar toggle works on mobile.
+- **Hidden chrome**: toolbar/deploy/menu, decoration and footer. The header strip stays (transparent) so the sidebar collapse control remains reachable.
 
 ## Layout
 
-Wide layout, sidebar left, main split into two equal panes (editor | results) at >= 900px; stacks on narrow screens. 24px gutters desktop, 16px mobile.
+Wide layout, sidebar left, main split into two equal panes (editor | results). Designed and checked for laptop widths (1440px and 1920px) only; mobile is out of scope. Content max-width 1680px, 32px page padding, 24px column gap.
